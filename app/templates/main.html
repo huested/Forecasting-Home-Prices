@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+
+<head>
+   <title>Housing Price Forecasts</title>
+   <meta charset="utf-8">
+
+   <script type="text/javascript" src="{{ url_for('static', filename='js/d3.v5.min.js') }}"></script>
+   <script type="text/javascript" src="{{ url_for('static', filename='js/d3-dsv.min.js') }}"></script>
+   <script type="text/javascript" src="{{ url_for('static', filename='js/d3-geo-projection.v2.min.js') }}"></script>
+   <script type="text/javascript" src="{{ url_for('static', filename='js/d3-legend.min.js') }}"></script>
+   <script type="text/javascript" src="{{ url_for('static', filename='js/d3-tip.min.js') }}"></script>
+   <script type="text/javascript" src="{{ url_for('static', filename='js/topojson.v2.min.js') }}"></script>
+   <script type=text/javascript>
+     var SCRIPT_ROOT = {{ request.script_root|tojson|safe }};
+   </script>
+
+
+  <style>
+  body {
+    font-family: "Helvetica Neue", Helvetica, sans-serif;
+  }
+  
+  .radio-group{
+    position: relative;
+}
+.radio{
+    display:inline-block;
+    width:15px;
+    height: 15px;
+    border-radius: 100%;
+    background-color:lightblue;
+    border: 2px solid lightblue;
+    cursor:pointer;
+    margin: 2px 0; 
+}
+.radio.selected{
+    border-color: blue;
+}
+  
+  div.stateTip {	
+    position: absolute;			
+    text-align: center;			
+    width: 130px;					
+    height: 20px;					
+    padding: 4px;				
+    font: 15px sans-serif;		
+    background: lightsteelblue;	
+    border: 0px;		
+    border-radius: 10px;			
+    pointer-events: none;			
+}
+  div.countyTip {	
+    position: absolute;			
+    text-align: center;			
+    width: 130px;					
+    height: 20px;					
+    padding: 4px;				
+    font: 15px sans-serif;		
+    background: lightsteelblue;	
+    border: 0px;		
+    border-radius: 10px;			
+    pointer-events: none;			
+}
+  #user_inputs {
+	position: fixed;
+	top: 10px;
+	left: 10px;
+	z-index: 100;}
+	
+	
+  </style>
+</head>
+
+
+
+<body>
+    <div id="user_inputs">
+      <label for="dropdown">Select a Parameter:</label>
+          <select name="dropdown1" id="dropdown"></select>
+          <button position = "fixed" onClick="window.location.reload();">Click to Reset</button>
+    </div>
+	
+	
+	
+
+  <div id="choropleth"></div>
+  <script>
+ 
+		// enter code to define margin and dimensions for svg
+	
+	margin = ({top: 50, right: 50, bottom: 50, left: 100});
+    h = 600;
+    w = 900;
+	legendHeight = 100;
+	legendWidth = 100;
+    // enter code to create svg
+    var svg = d3.select("div#choropleth")
+            .append("svg")
+            .attr("width", w + margin.left + margin.right)
+            .attr("height", h + margin.top + margin.bottom)
+			.attr("transform", "translate(0, 100)")
+            .attr("viewbox", "0 0 1050 700")
+            //.on("click", reset);
+    
+    
+    var projection = d3.geoAlbers().translate([w/2, h/2]).scale(1000).center([0,40]);
+	
+	//create the div for the state tool tip
+	var stateTip = d3.select("body").append("div")
+		.attr("class", "stateTip").style("opacity", 0)
+	
+	//create the div for the county tool tip
+	var countyTip = d3.select("body").append("div")		
+		.attr("class", "countyTip").style("opacity", 0)
+		
+		
+	//parse time function	
+	var parseTime = d3.timeParse("%a, %d %b %Y %H:%M:%S GMT");
+	var getYear = d3.timeParse("%Y");
+		
+	
+	//create the legend
+	var legendSVG = d3.select("div#user_inputs").append("svg").attr("width", 1200).attr("height", 100); 
+	
+    // zoom
+    const zoom = d3.zoom()
+      .scaleExtent([1, 2])
+      .on("zoom", zoomed);
+    svg.call(zoom)
+    function zoomed(event) {
+    const {transform} = d3.event;
+    svg.attr("transform", transform);
+    svg.attr("stroke-width", 1 / transform.k);
+  }
+
+    Promise.all([
+    d3.json("{{ url_for('static', filename='map/gz_2010_us_040_00_5m.json') }}"),
+    d3.json("{{ url_for('static', filename='map/gz_2010_us_050_00_5m.json') }}"),
+	d3.csv("{{ url_for('static', filename='influence/RegressionStrengths.csv') }}")]).then(function(data){
+    
+    //splitting out the jsons into their respective data
+    states = data[0]
+    counties = data[1]
+	countyParams = data[2]
+	//console.log(countyParams)
+	
+	//write all data to console for debugging
+	//console.log(counties)
+	//console.log(states)
+	console.log(countyParams)
+	
+	//reformat the county params
+	countyParamDict = {}
+	for(i = 0; i < countyParams.length; i++){
+		if(!Object.keys(countyParamDict).includes(countyParams[i].StateID)){
+			countyParamDict[countyParams[i].StateID] = {}
+		}
+		countyParamDict[countyParams[i].StateID][countyParams[i].County] = countyParams[i]
+	}
+	
+	//write to console for debugging
+	//console.log(countyParamDict)
+    
+    //This will be the populated state data array that we will use
+    filteredData = []
+	filteredCounties = []
+    
+    //These are the states/territories we are not including
+    disallowedStates = ['Alaska', 'Hawaii', 'Puerto Rico']
+	disallowedStateIds = [] //to be populated
+    
+    //Filter out our disallowed states here
+    for(i=0;i<states.features.length;i++){
+        if(!disallowedStates.includes(states.features[i].properties.NAME)){
+            filteredData.push(states.features[i])
+        }else{
+			disallowedStateIds.push(states.features[i].properties.STATE)
+		}
+    }
+	
+	for(i=0; i<counties.features.length; i++){
+		if(!disallowedStateIds.includes(counties.features[i].properties.STATE)){
+			filteredCounties.push(counties.features[i])
+		}
+	}
+	//getParamRange(countyParams, paramOfInterest)
+	
+	//create dropdown
+	dropDownOptions = ["S&P Index", "Unemployment Rate", "Mortgage Rates", "Industrial Production", "Labor Force"];
+	d3.select("#dropdown").selectAll('myOptions').data(dropDownOptions).enter().append('option').text(function (d) { return d; }).attr("value", function (d) { return d; });
+	//event listener for the dropdown. Update choropleth and legend when selection changes
+	d3.select("#dropdown").on("change", function(z){
+		currentParam = d3.select(this).property("value");
+		colorscale = d3.scaleLinear().domain(getParamRange(countyParams, currentParam)).range(["lightblue", "blue"]);
+		createInteractiveMap(filteredCounties, filteredData, countyParamDict, currentParam, counties);
+	});
+	
+	//default map
+	colorscale = d3.scaleLinear().domain(getParamRange(countyParams, dropDownOptions[0])).range(["lightblue", "blue"]);
+	createInteractiveMap(filteredCounties, filteredData, countyParamDict, dropDownOptions[0], counties);
+    
+});
+	function stateZoom(theBounds){
+		const [[x0, y0], [x1, y1]] = d3.geoPath().projection(projection).bounds(theBounds);
+		svg.transition().duration(750).call(
+			zoom.transform,
+			d3.zoomIdentity
+				.scale(Math.max(2, Math.min(9, 1 / Math.max((x1 - x0) / w*1.1, (y1 - y0) / h*1.1))))
+				.translate((w*.6) - ((x0 + x1) / 2), (h*.61) - ((y0 + y1) / 2)),
+		);
+	};
+	
+	function countyZoom(theBounds){
+		const [[xc0, yc0], [xc1, yc1]] = d3.geoPath().projection(projection).bounds(theBounds);
+		svg.transition().duration(750).call(
+			zoom.transform,
+			d3.zoomIdentity
+				.scale(Math.max(2, Math.min(8, 1 / Math.max((xc1 - xc0) / w, (yc1 - yc0) / h))))
+				.translate((w*.54) - ((xc0 + xc1) / 2), (h*.62) - ((yc0 + yc1) / 2)),
+		);
+	};
+	
+	function drawCounties(className, countiesToDraw, countyStats, selectedParam){
+		svg.append("g") 
+			.attr("class", className)
+			.selectAll("path") 
+			.data(countiesToDraw) 
+			.enter().append("path") 
+			.attr("class", "county")
+			.attr("fill", function(d){ 
+				if(Object.keys(countyStats[parseInt(d.properties.STATE)]).includes(d.properties.NAME)){
+					return colorscale(Math.abs(parseFloat(countyStats[parseInt(d.properties.STATE)][d.properties.NAME][selectedParam])))
+				}else{
+					return "gray"
+				}})
+			.attr("d", d3.geoPath()
+			.projection(projection))
+	
+	};
+	
+	function drawStates(className, statesToDraw){
+			svg.append("g") 
+			//.attr("class", className)
+			.selectAll("path") 
+			.data(statesToDraw) 
+			.enter().append("path") 
+			.attr("class", className)
+			.style("stroke-width", 2)
+			.style("stroke", "orange")
+			.attr("fill", "black") 
+			.style("opacity", 0)
+			.attr("d", d3.geoPath()
+			.projection(projection))
+	};
+	
+	function createLegend(){
+		d3.selectAll('.legend').remove();
+		var cLegend = d3.legendColor()
+			.shapeWidth(50).shapeHeight(10)
+			.labels(["weak", " ", " ", " ", "strong"])
+			.orient('horizontal')
+			.scale(colorscale)
+			.title("Parameter Regression Strength");
+		legendSVG.append("g").attr("class", "legend").attr("transform", "translate("+(w-100)+","+(margin["top"]/4)+")")
+		legendSVG.select(".legend").call(cLegend);
+	};
+	
+	
+	//Can use this to create a dynamic range for the color scale, currently just hardcoded it to be 0 to .03 though
+	function getParamRange(allParams, paramOfInterest){
+		var max = 0;
+		var min = 0;
+		for(i=0; i < allParams.length; i++){
+			if(parseFloat(allParams[i][paramOfInterest]) < min){
+				min = allParams[i][paramOfInterest];
+			}
+			if(parseFloat(allParams[i][paramOfInterest]) > max){
+				max = allParams[i][paramOfInterest];
+			}
+		}
+		return [0, .03]
+		
+	
+	
+	}
+	
+	
+	function createInteractiveMap(allCounties, allStates, countyStats, selectedParam, countyGeoJson){
+			//remove any existing counties
+		d3.selectAll(".allCounties").remove();
+		//Draw the map with counties
+		drawCounties("allCounties", allCounties, countyStats, selectedParam)
+		
+		// Draw the state map. This will be clear, but needed in order to supply tool tips to show the state highlighted
+		drawStates("state", allStates);
+		
+		//create the legend
+		createLegend();
+			
+		//create the state name tooltip here
+		svg.selectAll("path")
+		.on("mouseover", function(d){
+			//color of state the mouse is currently over
+			d3.select(this).style("opacity", .25);
+				
+			//move the tooltip to mouse location and populate it with the state's name
+			stateTip.style("opacity", 1);		
+			stateTip.html(d.properties.NAME + "<br/>")	
+				.style("left", (d3.event.pageX + 20) + "px")		
+				.style("top", (d3.event.pageY + 20) + "px");})
+		//make tooltip invisible and return the state to normal color on mouse out
+		.on("mouseout", function(d) {
+			d3.select(this).style("opacity", 0);
+			d3.selectAll('.stateTip').style("opacity", 0);})
+					
+		//state is selected here, we remove the U.S. map and show the county map of the state selected
+		.on("click", function(d){
+			//remove the state name tool tip
+			//d3.selectAll('.stateTip').style("opacity", 0);
+			d3.selectAll('.stateTip').style("left", 25 + "px") //Move tool tip instead?
+			d3.selectAll('.stateTip').style("top", 670 + "px")
+			//remove all states 
+			d3.selectAll('.state').remove(); //comment this line to see whole map on zoom. Maybe we draw all counties in the beginning as well?
+			d3.selectAll('.allCounties').remove();
+			countiesOfInterest = [];
+			//get all counties for the selected state
+			for(i=0;i<countyGeoJson.features.length;i++){
+				if(countyGeoJson.features[i].properties.STATE == d.properties.STATE){
+					countiesOfInterest.push(countyGeoJson.features[i]);
+				}
+			}
+			//draw counties of interest
+			drawCounties("county", countiesOfInterest, countyStats, selectedParam)
+			createLegend();
+			svg.selectAll("path")
+			.on("mouseover", function(f) {
+				//color current county orange
+				d3.select(this).attr("stroke", "orange");
+				//show the county tool tip and include county name
+				countyTip.style("opacity", 1);
+				countyTip.html(f.properties.NAME + "<br/>")
+					.style("left", (d3.event.pageX + 20) + "px")		
+					.style("top", (d3.event.pageY + 20) + "px");})
+			//remove the county tooltip and return the county to gray
+			.on("mouseout", function(g) {
+				d3.select(this).attr("stroke", "none");
+				d3.selectAll(".countyTip").style("opacity", 0);})
+			//select the county
+			.on("click", function(j) {
+				//create an array of only the county we care about
+				countyOfInterest = [];
+				countyOfInterest.push(j);
+				//d3.selectAll('.countyTip').style("opacity", 0);
+				d3.selectAll('.countyTip').style("left", 25 + "px") //Move tool tip instead?
+				d3.selectAll('.countyTip').style("top", 700 + "px")
+				//remove other counties
+				d3.selectAll('.county').remove();
+				//create county of interest
+				svg.selectAll("path")
+					.data(countyOfInterest)
+					.enter().append("path")
+					.attr("class", "countyOfInterest")
+					.attr("fill", "gray")
+					.attr("d", d3.geoPath().projection(projection));		
+				//perform zoom on county
+				countyZoom(j);
+				//call county line graph
+				createCountyInterface(countyStats[parseInt(d.properties.STATE)][j.properties.NAME]['FIPS'], selectedParam)
+				});
+				//perform state zoom
+				stateZoom(d);
+            
+		});
+	};
+	
+	function getMaxOrMin(array, index, choice){
+		var returnVar = array[0][index];
+		if(choice == "max"){
+			for(i = 0; i < array.length; i++){
+				if(!array[i][index]){
+					continue
+				}
+				if(returnVar < array[i][index]){
+					returnVar = array[i][index]
+				}
+			}
+		}else{
+			for(i = 0; i < array.length; i++){
+				if(!array[i][index]){
+					continue
+				}
+				if(returnVar > array[i][index]){
+					returnVar = array[i][index]
+				}
+			}
+		}
+		return returnVar
+	
+	}
+	
+	function createCountyLinegraph(paramData, thisParam){
+	
+		w_graph = 800
+		h_graph = 700
+		//d3.selectAll("div#choropleth").remove();
+		d3.selectAll(".trend_graph").remove();
+		
+		console.log(paramData);
+		
+		var div = document.createElement("div");
+			div.className = "trend_graph"
+			div.style.height = h_graph;
+			div.style.float = "center"
+			document.getElementById("choropleth").appendChild(div);
+		
+		var svg1 = d3.select(".trend_graph")
+			.append("svg")
+			.attr("width", w_graph)
+			.attr("height", h_graph)
+			
+		var xScale = d3.scaleTime()
+			.domain([parseTime(paramData[0][0]),parseTime(paramData[paramData.length-1][0])])
+			.range([0, w_graph/1.5])
+			
+		//get the max of the arrays
+		var maximum = getMaxOrMin(paramData, 3, "max")
+		var minimum = getMaxOrMin(paramData, 3, "min")
+		if(minimum > 0){
+			minimum = 0;
+		}
+		
+		var yScale = d3.scaleLinear()
+			.domain([minimum, maximum]) //change max
+			.range([h_graph/1.5, 0])
+		// Add the X Axis
+		
+		var line = d3.line()
+		.x(function(d) { return xScale(parseTime(d.date)); })
+		.y(function(d) { return yScale(d.val); });
+		
+		var xAxis = d3.axisBottom(xScale)
+		
+		// Add the Y Axis
+		var yAxis = d3.axisLeft(yScale)
+		
+		svg1.append("g")
+			.attr("id", "x_axis1")
+			.attr("transform", `translate(75, ${h_graph - 75})`)
+			.call(xAxis)
+			.append("text")
+			.attr("y", 50)
+			.attr("x", w/2 - 150)
+			.attr("text-anchor", "middle")
+			.style("fill", "black")
+			.style("font-size", "18px")
+			.text("Time")
+		
+						
+		svg1.append("g")
+			.attr("id", "y_axis1")
+			.attr("transform", `translate(75, ${h_graph - (h_graph/1.5) - 75})`)
+			.call(yAxis)
+			.append("text")
+			.attr("transform", "rotate(-90)")
+			.attr("y", -50)
+			.attr("x", (-h_graph/2)+75)
+			.attr("text-anchor", "middle")
+			.style("fill", "black")
+			.style("font-size", "18px")
+			.text(thisParam)
+			
+		svg1.append("text")
+			.attr("id", "title")
+			.attr("x", w_graph/2)
+			.attr("y", h_graph - (h_graph/1.5) - 100)
+			.text(thisParam+" Over Time")
+			.style("font-size", "20px")
+			.style("font-weight", "bold")
+			.style("text-anchor", "middle")
+		var currentLine = []
+		var valuesArray = []
+		for(i = 0; i < paramData.length; i++){
+			valuesArray.push({"date": paramData[i][0], "val": paramData[i][3]});
+		}
+		currentLine.push({"values": valuesArray});
+		
+			
+		var lines = svg1.selectAll("lines")
+		.data(currentLine)
+		.enter()
+		.append("g");
+
+		lines.append("path")
+		.attr("fill", "none")
+		.attr("stroke", "green")
+		.attr("stroke-width", 2)
+		.attr("d", function(d) { return line(d.values); })
+		.attr("transform", `translate(75, ${h_graph - (h_graph/1.5) - 75})`)
+	//
+	}
+	
+	// Add line graph for county level ----------------------------------------------------------------------------
+	function createCountyInterface(FIPS, currentParam) {
+		// Possible solution to svg scaling issue is to replace with a new one, and add back county graph + additional elements
+		svg.remove()
+		legendSVG.remove()
+		d3.select("div#user_inputs").append("button").attr("class", "simButton").text("Try A Simulation!")
+		
+		//create a dictionary for mapping parameter chosen to data loaded
+		paramMapping = {"S&P Index": 0, "Unemployment Rate": 1, "Mortgage Rates": 2, "Industrial Production": 3, "Labor Force": 4, "Price History": 5};
+		//include price history into the drop down
+		d3.select("#dropdown").selectAll('myOptions').data(["Price History"]).enter().append('option').text(function (d) { return d; }).attr("value", function (d) { return d; });
+		Promise.all([d3.json(SCRIPT_ROOT + '/sp'),
+		d3.json(SCRIPT_ROOT + '/unemployment/' + FIPS),
+		d3.json(SCRIPT_ROOT + '/mortgage'),
+		d3.json(SCRIPT_ROOT + '/indprod'),
+		d3.json(SCRIPT_ROOT + '/labor/' + FIPS),
+		d3.json(SCRIPT_ROOT + '/countyprices/' + FIPS)
+		]).then(function (data) {
+			d3.select(".simButton").on("click", function(z) {addSimulationOptions(FIPS, data)});
+			d3.select("#dropdown").on("change", function(z){
+				thisParam = d3.select(this).property("value");
+				var index = paramMapping[thisParam];
+				createCountyLinegraph(data[index], thisParam) //, svg1)
+			});
+			createCountyLinegraph(data[paramMapping[currentParam]], currentParam)
+		});
+	    
+	}
+
+	function addSimulationOptions(FIPS, historicalParams) {
+		d3.selectAll(".trend_graph").remove();
+		console.log(historicalParams)
+
+		// Get default placeholders for forecast
+		spDefault = 10.00
+		ueDefault = historicalParams[1][historicalParams[1].length-1][3].toFixed(2)
+		mrDefault = historicalParams[2][historicalParams[2].length-1][3].toFixed(2)
+		ipDefault = historicalParams[3][historicalParams[3].length-1][3].toFixed(2)
+		lfDefault = ((historicalParams[4][historicalParams[4].length-1][3] / historicalParams[4][historicalParams[4].length-2][3] - 1) * 100).toFixed(2)
+
+		spn_check = 0
+		// Set temporary FIPS until button fix
+		Promise.all([d3.json(SCRIPT_ROOT + '/countyprices/' + FIPS)]).then(function(data){
+			console.log(data)
+
+		w_graph = 700
+		h_graph = 700
+
+		//  Add two divs side by side, one for simulation inputs and another for line graph
+		var div = document.createElement("div");
+			div.className = "sim_inputs"
+			div.id = "sim_inputs"
+			div.style.width = "50%";
+			div.style.height = h_graph;
+			//div.style.background = "red";
+			//div.style.color = "white";
+			//div.innerHTML = "left";
+			div.style.float = "left"
+			document.getElementById("choropleth").appendChild(div);
+		
+		var div = document.createElement("div");
+			div.className = "sim_graph"
+			div.style.width = "50%";
+			div.style.height = h_graph;
+			//div.style.background = "blue";
+			//div.style.color = "white";
+			//div.innerHTML = "right";
+			div.style.float = "right"
+			document.getElementById("choropleth").appendChild(div);
+		var form = document.createElement("form");
+			form.setAttribute("method", "post")
+			document.getElementById("sim_inputs").appendChild(form);
+
+		var text1 = document.createElement("p")
+			text1.setAttribute("text", "SP")
+			//text1.setAttribute("size", "12")
+			//text1.setAttribute("color", "black")
+			text1.style.marginTop = "200px"
+			text1.style.marginLeft = "200px"
+		//	text1.style.display = "block"
+			document.getElementById("sim_inputs").appendChild(text1);
+		var spn1 = document.createElement("span");
+			spn1.textContent = "S&P 500 (% YoY)";
+			spn1.style.marginLeft = "200px"
+			spn1.style.marginTop = "20px"
+		
+		document.getElementById("sim_inputs").appendChild(spn1);
+		var param1 = document.createElement("input")
+			param1.setAttribute("type", "text")
+			param1.setAttribute("name", "param1")
+			param1.setAttribute("placeholder", spDefault)
+			param1.setAttribute("label", "SP")
+			param1.id = "param1"
+			//param1.style.marginTop = "200px"
+			param1.style.marginLeft = "200px"
+			param1.style.display = "block"
+			param1.value = spDefault
+			document.getElementById("sim_inputs").appendChild(param1);
+		
+		var spn2 = document.createElement("span");
+			spn2.textContent = "Unemployment (%)";
+			spn2.style.marginLeft = "200px"
+			spn2.style.marginTop = "30px"
+		
+		document.getElementById("sim_inputs").appendChild(spn2);
+		var param2 = document.createElement("input")
+			param2.setAttribute("type", "text")
+			param2.setAttribute("name", "param2")
+			param2.setAttribute("placeholder", ueDefault)
+			param2.id = "param2"
+			param2.style.marginLeft = "200px"
+			param2.style.display = "block"
+			param2.value = ueDefault
+			document.getElementById("sim_inputs").appendChild(param2);
+		
+		var spn3 = document.createElement("span");
+			spn3.textContent = "Mortgage Rate (%)";
+			spn3.style.marginLeft = "200px"
+			spn3.style.marginTop = "30px"
+		
+		document.getElementById("sim_inputs").appendChild(spn3);
+		var param3 = document.createElement("input")
+			param3.setAttribute("type", "text")
+			param3.setAttribute("name", "param3")
+			param3.setAttribute("placeholder", mrDefault)
+			param3.id = "param3"
+			param3.style.marginLeft = "200px"
+			param3.style.display = "block"
+			param3.value = mrDefault
+			document.getElementById("sim_inputs").appendChild(param3);
+		
+		var spn4 = document.createElement("span");
+			spn4.textContent = "Industrial Production (Index Level)";
+			spn4.style.marginLeft = "200px"
+			spn4.style.marginTop = "30px"
+		
+		document.getElementById("sim_inputs").appendChild(spn4);
+		var param4 = document.createElement("input")
+			param4.setAttribute("type", "text")
+			param4.setAttribute("name", "param4")
+			param4.setAttribute("placeholder", ipDefault)
+			param4.id = "param4"
+			param4.style.marginLeft = "200px"
+			param4.style.display = "block"
+			param4.value = ipDefault
+			document.getElementById("sim_inputs").appendChild(param4);
+		
+		var spn5 = document.createElement("span");
+			spn5.textContent = "Labor Force (% YoY)";
+			spn5.style.marginLeft = "200px"
+			spn5.style.marginTop = "30px"
+		
+		document.getElementById("sim_inputs").appendChild(spn5);
+		var param5 = document.createElement("input")
+			param5.setAttribute("type", "text")
+			param5.setAttribute("name", "param5")
+			param5.setAttribute("placeholder", lfDefault)
+			param5.id = "param5"
+			param5.style.marginLeft = "200px"
+			param5.style.display = "block"
+			param5.value = lfDefault
+			document.getElementById("sim_inputs").appendChild(param5);
+		
+			
+		var update_sim_btn = document.createElement("BUTTON")
+			update_sim_btn.innerHTML = "Update Forecast"
+			update_sim_btn.style.marginTop = "20px"
+			update_sim_btn.style.marginLeft = "225px"
+			update_sim_btn.style.display = "block"
+			update_sim_btn.id = "update_fcst"
+			
+			document.getElementById("sim_inputs").appendChild(update_sim_btn);
+			document.getElementById("update_fcst").addEventListener("click", function() { runSimulation(FIPS) });
+
+		addSimFcstSvg(FIPS)
+		
+		})
+	}	
+	
+	function runSimulation(FIPS) {
+
+		// Remove and add svg back after each Update Foercast run
+		d3.select(".sim_graph").remove();
+		var div = document.createElement("div");
+			div.className = "sim_graph"
+			div.style.width = "50%";
+			div.style.height = h_graph;
+			//div.style.background = "blue";
+			//div.style.color = "white";
+			//div.innerHTML = "right";
+			div.style.float = "right"
+			document.getElementById("choropleth").appendChild(div);
+
+		addSimFcstSvg(FIPS)
+		// Get user input values
+		SP = document.getElementById("param1").value
+		UE = document.getElementById("param2").value
+		MR = document.getElementById("param3").value
+		IP = document.getElementById("param4").value
+		LF = document.getElementById("param5").value
+		
+		console.log(SP, UE, MR, IP, LF)
+		// Calling county price function as place holder, when forecast model function is ready
+		// this will be replaced with the call using user inputs
+		Promise.all([d3.json(SCRIPT_ROOT + '/predict/' + FIPS + '/' + SP + '/' + UE + '/' + MR + '/' + IP + '/' + LF)]).then(function (data) {
+			console.log(data)
+			console.log(data[0])
+			console.log(data[0][0])
+			console.log(data[0][0][4])
+			
+			var line_data = []
+			for (i=0; i < data[0].length; i++) {
+				var line_pairs = {}
+				line_pairs['x'] = data[0][i][0]
+				line_pairs['y'] = data[0][i][3]
+				line_data.push(line_pairs)
+			}
+
+			// Get forecasted price and % change YoY
+			fcstPrice = line_data[line_data.length-1].y
+			lastPrice = line_data[line_data.length-2].y
+			fcstChange = ((fcstPrice/lastPrice - 1) * 100).toFixed(2)
+
+			// Report forecast % change
+
+			if (spn_check != 0) {
+					document.getElementById("fcst_change_text").remove();  
+			}
+
+			var spn = document.createElement("span");
+				spn.id = "fcst_change_text"
+				spn.textContent = `Predicted Price Change in 2022: ${fcstChange}%`;
+				spn.style.marginLeft = "200px"
+				spn.style.marginTop = "50px"
+				document.getElementById("sim_inputs").appendChild(spn);
+			
+			spn_check = 1
+			//console.log(spn)
+			var line = d3.line()
+    			.x(function(d) { return xScale1(parseTime(d.x)) }) // set the x values for the line generator
+    			.y(function(d) { return yScale1(d.y) }) // set the y values for the line generator 
+			console.log(line_data)
+			
+			
+			xScale1 = d3.scaleTime()
+			.domain([parseTime(line_data[0].x),parseTime(line_data[line_data.length-1].x)])
+			.range([0, w_graph/1.5])
+				//.enter()
+
+		
+
+			console.log(line_data[0].x)
+			console.log(typeof parseTime(line_data[0].x))
+			console.log(parseTime(line_data[0].x))
+			console.log(getYear(parseTime(line_data[0].x)))
+
+			svg1.append("path")
+				.attr("transform", `translate(50, ${h_graph - (h_graph/1.5) - 50})`)
+				.data(line_data)
+				.attr("class", "line")
+				.attr("d", line(line_data))
+				.attr("stroke", "blue")
+				//.attr("stroke", function(d) { return d.color } )
+				.attr("fill", "none")
+				.style("stroke-width", 1.5);
+
+			svg1.append("path")
+				.attr("transform", `translate(50, ${h_graph - (h_graph/1.5) - 50})`)
+				.data(line_data.slice(line_data.length-2))
+				.attr("class", "line")
+				.attr("d", line(line_data.slice(line_data.length-2)))
+				.attr("stroke", "lightgreen")
+				//.attr("stroke", function(d) { return d.color } )
+				.attr("fill", "none")
+				.style("stroke-width", 1.5);
+			
+			});
+	}
+
+	function addSimFcstSvg(FIPS) {
+		Promise.all([d3.json(SCRIPT_ROOT + '/countyprices/' + FIPS)]).then(function(data){
+			console.log(data)
+		svg1 = d3.select(".sim_graph")
+			.append("svg")
+			.attr("width", w_graph)
+			.attr("height", h_graph)
+			.append("g")
+			.attr("id", "graph_space")
+		
+
+
+		xScale1 = d3.scaleTime()
+			.domain([parseTime(data[0][0][0]),parseTime(data[0][data[0].length-1][0])])
+			.range([0, w_graph/1.5])
+		
+		
+		var maximum = getMaxOrMin(data[0], 3, "max")
+		var minimum = getMaxOrMin(data[0], 3, "min")
+		
+		console.log(maximum)
+		
+		yScale1 = d3.scaleLinear()
+			.domain([0, maximum * 1.25]) //change max
+			.range([h_graph/1.5, 0])
+		
+			// Add the X Axis
+		xAxis1 = d3.axisBottom(xScale1)
+		
+		// Add the Y Axis
+		yAxis1 = d3.axisLeft(yScale1)
+		
+		svg1.append("g")
+			.attr("id", "x_axis1")
+			.attr("transform", `translate(50, ${h_graph - 50})`)
+			.call(xAxis1);
+		
+						
+		svg1.append("g")
+			.attr("id", "y_axis1")
+			.attr("transform", `translate(50, ${h_graph - (h_graph/1.5) - 50})`)
+			.call(yAxis1)
+		
+		svg1.append("text")
+			.attr("x", w_graph/2 - 50)
+			.attr("y", h_graph)
+			.text("Year")
+			.style("font-size", "18px")
+			.style("fill", "black")
+			.style("text-anchor", "middle")
+
+		svg1.append("text")
+			.attr("id", "title")
+			.attr("x", w_graph/2 - 50)
+			.attr("y", h_graph - (h_graph/1.5) - 125)
+			.text("Simulation Forecast")
+			.style("font-size", "22px")
+			.style("fill", "black")
+			.style("font-weight", "bold")
+			.style("text-anchor", "middle")
+	
+
+		svg1.append("text")
+			.attr("id", "title")
+			.attr("x", "60")
+			.attr("y", h_graph - (h_graph/1.5) - 75)
+			.text("Home Price ($)")
+			.style("font-size", "18px")
+			.style("fill", "black")
+			.style("text-anchor", "middle")
+		})	
+	}
+
+	
+	
+  </script>             
+</body>
+</html>
